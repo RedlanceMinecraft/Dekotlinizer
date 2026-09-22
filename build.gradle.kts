@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "org.redlance"
-version = "1.0.0"
+version = "1.0.1"
 
 // ASM is bundled relocated: a buildscript classpath is shared with every other plugin applied to the
 // same project, and the first ASM on it would otherwise decide which API this transform really gets.
