@@ -12,12 +12,6 @@ import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
-import org.objectweb.asm.ClassReader
-import org.objectweb.asm.ClassWriter
-import org.objectweb.asm.Opcodes
-import org.objectweb.asm.commons.ClassRemapper
-import org.objectweb.asm.commons.SimpleRemapper
-import org.objectweb.asm.tree.ClassNode
 import java.util.jar.JarEntry
 import java.util.jar.JarFile
 import java.util.jar.JarOutputStream
@@ -60,10 +54,7 @@ abstract class DekotlinizeJarTask : DefaultTask() {
 
     @TaskAction
     fun run() {
-        val remappings = typeRemappings.get().map { (kotlinType, javaType) -> TypeRemapping(kotlinType, javaType) }
-        val remapper = SimpleRemapper(Opcodes.ASM9, typeRemappings.get())
-        val validator = KotlinReferenceValidator(remappings)
-        val hideParameterNames = stripNonPublicParameterNames.get()
+        val transform = ClassTransform(typeRemappings.get(), stripNonPublicParameterNames.get())
         val violations = mutableListOf<String>()
         val written = mutableSetOf<String>()
         val target = outputJar.get().asFile.apply { parentFile.mkdirs() }
@@ -82,11 +73,9 @@ abstract class DekotlinizeJarTask : DefaultTask() {
                         }
                         if (isSerializationHelper(entry.name)) continue
 
-                        val node = read(input, entry, remapper)
-                        if (KotlinClassStripper.isKotlinClass(node)) KotlinClassStripper.strip(node)
-                        if (hideParameterNames) KotlinClassStripper.hideNonPublicParameterNames(node)
-                        violations += validator.validate(node)
-                        if (written.add(entry.name)) write(node, entry.name, output)
+                        val result = transform.apply(read(input, entry))
+                        violations += result.violations
+                        if (written.add(entry.name)) write(result.bytes, entry.name, output)
                     }
                 }
             }
@@ -102,16 +91,12 @@ abstract class DekotlinizeJarTask : DefaultTask() {
         logger.lifecycle("dekotlinize: ${written.count { it.endsWith(".class") }} classes, no Kotlin runtime left")
     }
 
-    private fun read(jar: JarFile, entry: JarEntry, remapper: SimpleRemapper): ClassNode {
-        val bytes = jar.getInputStream(entry).use { it.readBytes() }
-        return ClassNode().also { ClassReader(bytes).accept(ClassRemapper(it, remapper), 0) }
-    }
+    private fun read(jar: JarFile, entry: JarEntry): ByteArray =
+        jar.getInputStream(entry).use { it.readBytes() }
 
-    private fun write(node: ClassNode, name: String, output: JarOutputStream) {
-        val writer = ClassWriter(ClassWriter.COMPUTE_MAXS)
-        node.accept(writer)
+    private fun write(bytes: ByteArray, name: String, output: JarOutputStream) {
         output.putNextEntry(JarEntry(name))
-        output.write(writer.toByteArray())
+        output.write(bytes)
         output.closeEntry()
     }
 

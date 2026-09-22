@@ -47,6 +47,8 @@ internal object KotlinClassStripper {
             method.visibleParameterAnnotations = method.visibleParameterAnnotations?.map { it?.dropKotlin() }?.toTypedArray()
             method.invisibleParameterAnnotations = method.invisibleParameterAnnotations?.map { it?.dropKotlin() }?.toTypedArray()
             KotlinCallRewriter.rewriteIntrinsics(method)
+            KotlinCallRewriter.rewriteDefaultConstructorCalls(method)
+            KotlinCallRewriter.stripDefaultMarkerParameter(method)
             if (isEnum) KotlinCallRewriter.dropEnumEntries(method)
         }.toMutableList()
 
@@ -68,10 +70,11 @@ internal object KotlinClassStripper {
         // The enum contract: values/valueOf and the synthetic $values that <clinit> stores in $VALUES.
         isEnum && (method.name == "values" || method.name == "valueOf" || method.name == "\$values") -> true
         method.name == "<clinit>" -> isObject || isEnum
-        // Synthetic constructors of Kotlin default arguments (DefaultConstructorMarker) and of the
-        // kotlinx deserializer (SerializationConstructorMarker) both drag the runtime back in.
-        method.name == "<init>" ->
-            !method.desc.contains("DefaultConstructorMarker") && !method.desc.contains("SerializationConstructorMarker")
+        // The synthetic constructor of the kotlinx deserializer drags the runtime back in. The one
+        // Kotlin generates for default arguments does not: it keeps, and loses its marker parameter
+        // in the rewriter — a class whose parameters all have defaults calls it from the generated
+        // no-argument constructor, which dropping it would leave pointing at nothing.
+        method.name == "<init>" -> !method.desc.contains("SerializationConstructorMarker")
         (method.name.startsWith("get") || method.name.startsWith("is")) &&
             Type.getArgumentTypes(method.desc).isEmpty() -> true
         // Value semantics; Intrinsics.areEqual inside equals becomes Objects.equals in the rewriter.

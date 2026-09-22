@@ -15,11 +15,17 @@ Kotlin classes become POJOs with value semantics: fields, getters, a plain const
 
 - `@kotlin.Metadata`, `kotlinx` annotations, `.kotlin_module` and `.kotlin_builtins` entries;
 - `Companion` and generated `$$serializer` classes, plus the Kotlin-typed helper fields beside them;
-- data-class boilerplate — `copy`, `componentN`, `write$Self` — and the synthetic constructors that
-  carry `DefaultConstructorMarker` or `SerializationConstructorMarker`;
+- data-class boilerplate — `copy`, `componentN`, `write$Self` — and the synthetic constructor of the
+  kotlinx deserializer, which carries `SerializationConstructorMarker`;
 - `Intrinsics` null checks, with `Intrinsics.areEqual` retargeted to `java.util.Objects.equals`;
 - the `kotlin.enums.EnumEntries` initialization in an enum `<clinit>`, while the constants, `values`,
   `valueOf` and `$values` stay, because a reflective reader resolves a constant by name.
+
+A default argument stays a default argument. Kotlin compiles one into a second constructor taking a
+bitmask and a `DefaultConstructorMarker`, a parameter that exists only to keep the two JVM signatures
+apart and is always passed as null: the parameter goes and the constructor stays, along with the
+calls to it. Dropping the constructor instead would break a class whose parameters all have defaults,
+because the parameterless constructor Kotlin generates beside it does nothing but call it.
 
 Kotlin types that a data class only stores, returns and prints are swapped for their JDK counterpart
 (`kotlin.uuid.Uuid` for `java.util.UUID`, `kotlin.time.Instant` for `java.time.Instant`). A Kotlin
@@ -66,6 +72,13 @@ plugin applied to the same project, so an unrelocated copy would leave the trans
 whichever ASM version happened to land first.
 
 ## Building
+
+`./gradlew test` runs the transform over `src/fixtures`, which the Kotlin plugin compiles with the
+same compiler a consumer uses — so the tests see the real output for defaults, enums, objects and
+data classes rather than bytecode assembled by hand. Each transformed class is then loaded on a class
+loader whose parent is the platform one: with no kotlin-stdlib in sight, a reference the transform
+missed fails there the way it would fail in a consumer's JVM. `fixtures/unsupported` holds what
+cannot be transformed, and asserts the build is failed rather than a broken jar shipped.
 
 `./gradlew publishToMavenLocal` installs the plugin for local consumers; `./gradlew publish` sends it
 to the RedlanceMinecraft repository, with credentials taken from `release.repo.username`/

@@ -55,6 +55,70 @@ internal object KotlinCallRewriter {
     }
 
     /**
+     * A constructor Kotlin generated to apply default arguments: the declared parameters, a bitmask
+     * of the ones the caller left out, and a trailing `DefaultConstructorMarker` that exists only to
+     * keep the two JVM signatures apart and is always passed as null.
+     */
+    fun isDefaultConstructor(method: MethodNode): Boolean =
+        method.name == "<init>" && method.desc.endsWith(MARKER_SUFFIX)
+
+    /**
+     * Drops that trailing marker from the constructor's own descriptor. The constructor itself stays:
+     * a class whose parameters all have defaults gets a generated no-argument constructor whose whole
+     * body is a call to this one, so removing it would leave that call pointing at nothing. The marker
+     * parameter is never read, which leaves an unused local slot behind and nothing else.
+     */
+    fun stripDefaultMarkerParameter(method: MethodNode) {
+        if (!isDefaultConstructor(method)) return
+
+        method.desc = withoutMarker(method.desc)
+        // Synthetic constructors carry no parameter names or annotations worth keeping, and both
+        // arrays are sized to the old parameter count, so they would describe the wrong ones.
+        method.parameters = null
+        method.visibleParameterAnnotations = null
+        method.invisibleParameterAnnotations = null
+        method.visibleAnnotableParameterCount = 0
+        method.invisibleAnnotableParameterCount = 0
+        // The marker's debug-table entry would keep naming a Kotlin type nothing else mentions.
+        method.localVariables?.removeAll { it.desc.contains(DEFAULT_MARKER) }
+    }
+
+    /**
+     * Retargets the calls to such a constructor — the generated no-argument constructor makes one,
+     * and so does every Kotlin call site that omits an argument. The marker is pushed last, so the
+     * `ACONST_NULL` right before the call is its argument; a call site that pushed anything else is
+     * left alone, and [KotlinReferenceValidator] reports it rather than this quietly corrupting the
+     * operand stack.
+     */
+    fun rewriteDefaultConstructorCalls(method: MethodNode) {
+        val instructions = method.instructions
+        for (insn in instructions.toArray()) {
+            if (insn !is MethodInsnNode) continue
+            if (insn.opcode != Opcodes.INVOKESPECIAL || insn.name != "<init>") continue
+            if (!insn.desc.endsWith(MARKER_SUFFIX)) continue
+
+            val markerPush = previousInstruction(insn) ?: continue
+            if (markerPush.opcode != Opcodes.ACONST_NULL) continue
+
+            instructions.remove(markerPush)
+            insn.desc = withoutMarker(insn.desc)
+        }
+    }
+
+    /** The same descriptor without its last parameter, which the caller has checked is the marker. */
+    private fun withoutMarker(desc: String): String {
+        val parameters = Type.getArgumentTypes(desc).dropLast(1).toTypedArray()
+        return Type.getMethodDescriptor(Type.getReturnType(desc), *parameters)
+    }
+
+    /** The instruction before [insn], skipping labels, line numbers and frames. */
+    private fun previousInstruction(insn: AbstractInsnNode): AbstractInsnNode? {
+        var previous = insn.previous
+        while (previous != null && previous.opcode < 0) previous = previous.previous
+        return previous
+    }
+
+    /**
      * The instructions that pushed the arguments of [call] — one per argument, walking back from the
      * call itself and skipping labels, line numbers and frames, which are not instructions.
      */
@@ -74,4 +138,6 @@ internal object KotlinCallRewriter {
 
     private const val INTRINSICS = "kotlin/jvm/internal/Intrinsics"
     private const val ENUMS = "kotlin/enums/"
+    private const val DEFAULT_MARKER = "kotlin/jvm/internal/DefaultConstructorMarker"
+    private const val MARKER_SUFFIX = "L$DEFAULT_MARKER;)V"
 }

@@ -18,10 +18,37 @@ configurations.compileOnly {
     extendsFrom(shaded)
 }
 
+// The tests run the transform for real, so they need the unrelocated ASM at runtime too.
+configurations.testImplementation {
+    extendsFrom(shaded)
+}
+
+/**
+ * Sources the tests transform. They are compiled by the Kotlin plugin rather than assembled by hand,
+ * so what the tests feed the transform is what kotlinc actually emits — defaults, enums, objects and
+ * the synthetic members around them — and a compiler that changes its output breaks the test rather
+ * than the consumer's build.
+ */
+val fixtures by sourceSets.creating
+
 dependencies {
     shaded("org.ow2.asm:asm:9.10.1")
     shaded("org.ow2.asm:asm-tree:9.10.1")
     shaded("org.ow2.asm:asm-commons:9.10.1")
+
+    "fixturesImplementation"("org.jetbrains.kotlin:kotlin-stdlib:$embeddedKotlinVersion")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.14.1")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+    useJUnitPlatform()
+
+    // The fixture classes are read as bytes, never loaded from this classpath: a test that resolved
+    // one here would be testing the untransformed class.
+    inputs.files(fixtures.output).withPropertyName("fixtureClasses")
+    systemProperty("dekotlinizer.fixtures", fixtures.output.classesDirs.asPath)
 }
 
 tasks.shadowJar {
